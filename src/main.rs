@@ -1,13 +1,14 @@
 mod config;
 mod matcher;
+mod processor;
 mod slack;
 
 use anyhow::Result;
 use config::*;
-use log::{debug, error, info, warn};
-use matcher::*;
-use systemd::journal::{JournalSeek, OpenOptions};
+use log::info;
+use tokio::join;
 
+use self::processor::JournalProcessor;
 use self::slack::Slack;
 
 #[tokio::main]
@@ -33,58 +34,15 @@ async fn main() -> Result<()> {
         binary_name, version, git_hash
     );
 
+    let (tx, rx) = flume::unbounded::<String>();
+
     let config_path = std::env::var("LOG_ALERT_CONFIG").ok();
     let config = Config::load(config_path)?;
-
-    let matcher = Matcher::new(&config.rules)?;
-    info!("Loaded {} matching rules.", config.rules.len());
-
     let slack = Slack::new(config.slack_webhook_url.clone());
+    let processor = JournalProcessor::new(&config)?;
 
-    let mut journal = OpenOptions::default()
-        .open()
-        .expect("Failed to open systemd journal");
+    let (_, processor_res) = join!(slack.start(rx), processor.start(tx));
+    processor_res?;
 
-    if config.systemd_unit.is_empty() {
-        warn!("No systemd unit specified, monitoring all logs.");
-    } else {
-        info!("Filtering logs for systemd unit: {}", config.systemd_unit);
-        journal
-            .match_add("_SYSTEMD_UNIT", config.systemd_unit.clone())
-            .inspect_err(|e| {
-                error!(
-                    "failed to fiOpenOptionslter {} unit: {}",
-                    config.systemd_unit, e
-                )
-            })?;
-    }
-    journal
-        .seek(JournalSeek::Tail)
-        .expect("Failed to seek to end of journal");
-
-    journal.previous()?;
-
-    loop {
-        if journal.next()? == 0 {
-            journal.wait(None)?; // wait for new entries (blocking)
-        }
-
-        let Some(message) = journal.get_data("MESSAGE")?.and_then(|v| {
-            v.value()
-                .map(String::from_utf8_lossy)
-                .map(|v| v.into_owned())
-        }) else {
-            info!("Journal entry has no MESSAGE field.");
-            continue;
-        };
-
-        let Some(msg) = matcher.find_match(&message) else {
-            debug!("No matching rule for log message: {}", message);
-            continue;
-        };
-
-        debug!("Matched log message: {}", message);
-
-        slack.send_alert(&msg).await?;
-    }
+    Ok(())
 }

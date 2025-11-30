@@ -4,11 +4,25 @@ use anyhow::{Context, Result};
 use log::info;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub slack_webhook_url: String,
     pub systemd_unit: String,
-    pub rules: Vec<MatchingRule>,
+    pub alerts: Vec<AlertRule>,
+    pub heartbeats: Vec<HeartbeatRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertRule {
+    pub pattern: String,
+    pub prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatRule {
+    pub pattern: String,
+    pub prefix: String,
+    pub tolerance: u64,
 }
 
 const DEFAULT_CONFIGS: [&str; 2] = ["config.toml", "/etc/journal-alerts/config.toml"];
@@ -34,10 +48,4 @@ impl Config {
 
         Ok(config)
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MatchingRule {
-    pub pattern: String,
-    pub prefix: String,
 }

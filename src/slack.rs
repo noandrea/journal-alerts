@@ -1,6 +1,8 @@
 use anyhow::Result;
+use flume::Receiver;
 use log::{error, info};
 
+#[derive(Clone)]
 pub struct Slack {
     webhook_url: String,
     client: reqwest::Client,
@@ -11,6 +13,14 @@ impl Slack {
         Slack {
             webhook_url,
             client: reqwest::Client::new(),
+        }
+    }
+
+    pub async fn start(&self, rx: Receiver<String>) {
+        while let Ok(message) = rx.recv() {
+            if let Err(e) = self.send_alert(&message).await {
+                error!("Error sending alert to Slack: {}", e);
+            }
         }
     }
 

@@ -1,28 +1,32 @@
-use super::config::MatchingRule;
 use anyhow::Result;
 
+/// A struct that holds compiled regex patterns and can find matches in log lines.
 pub struct Matcher {
-    patterns: Vec<(regex::Regex, String)>,
+    // A vector of tuples containing the index of the pattern and the compiled regex.
+    patterns: Vec<(usize, regex::Regex)>,
 }
 
 impl Matcher {
-    pub fn new(rules: &[MatchingRule]) -> Result<Self> {
-        let mut patterns = Vec::new();
-        for rule in rules {
-            let re = regex::Regex::new(&rule.pattern)
-                .inspect_err(|e| eprintln!("invalid pattern: {e}"))?;
-            patterns.push((re, rule.prefix.clone()));
-        }
+    pub fn new(patterns: &[String]) -> Result<Self> {
+        // Compile the regex patterns and store them with their indices.
+        let patterns = patterns
+            .iter()
+            .enumerate()
+            .map(|(i, rule)| {
+                let re = regex::Regex::new(rule)
+                    .map_err(|e| anyhow::anyhow!("Invalid regex pattern '{}': {}", rule, e))?;
+                Ok((i, re))
+            })
+            .collect::<Result<Vec<(usize, regex::Regex)>>>()?;
         Ok(Matcher { patterns })
     }
 
-    pub fn find_match(&self, line: &str) -> Option<String> {
-        for (re, prefix) in &self.patterns {
+    /// Finds the first matching pattern for the given log line.
+    pub fn find_match(&self, line: &str) -> Option<(usize, String)> {
+        // Check each pattern to see if it matches the given line.
+        for (i, re) in &self.patterns {
             if re.is_match(line) {
-                if prefix.is_empty() {
-                    return Some(line.to_string());
-                }
-                return Some(format!("{prefix}{line}"));
+                return Some((*i, line.into()));
             }
         }
         None
@@ -35,35 +39,23 @@ mod tests {
 
     #[test]
     fn test_matcher() {
-        let rules = vec![
-            MatchingRule {
-                pattern: "error".to_string(),
-                prefix: "ERROR: ".to_string(),
-            },
-            MatchingRule {
-                pattern: "warn".to_string(),
-                prefix: "WARNING: ".to_string(),
-            },
-            MatchingRule {
-                pattern: r"(?i)quorum not reached".to_string(),
-                prefix: "".to_string(),
-            },
-        ];
+        let rules = ["error", "warn", "(?i)quorum not reached"];
 
-        let matcher = Matcher::new(&rules).unwrap();
+        let matcher =
+            Matcher::new(&rules.iter().map(|s| s.to_string()).collect::<Vec<String>>()).unwrap();
 
         let tests = vec![
             (
                 "This is an error message",
-                Some("ERROR: This is an error message".to_string()),
+                Some((0, "This is an error message".to_string())),
             ),
             (
                 "This is a warn message",
-                Some("WARNING: This is a warn message".to_string()),
+                Some((1, "This is a warn message".to_string())),
             ),
             (
                 "Quorum not reached in the cluster",
-                Some("Quorum not reached in the cluster".to_string()),
+                Some((2, "Quorum not reached in the cluster".to_string())),
             ),
             ("All systems operational", None),
         ];

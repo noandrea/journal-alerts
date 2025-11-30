@@ -10,15 +10,20 @@ slack_webhook_url = "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
 # Alert rules - each rule defines a pattern to match in the logs
 # When a log line matches the pattern, an alert is sent to Slack
 
-[[rules]]
+[[alert]]
 pattern = "(?i)error"
 prefix = "🔴 "
 
-[[rules]]
+[[alert]]
 pattern = "(?i)warn"
 prefix = "🟠 "
 
-[[rules]]
+[[alert]]
 pattern = "(?i)info"
 prefix = "🔵 "
+
+[[heartbeat]]
+pattern = "(?i)health_check_ok"
+prefix = "Missing " 
+tolerance = 300 # in seconds
 
