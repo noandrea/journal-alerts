@@ -1,3 +1,4 @@
+use std::process::Stdio;
 use std::sync::Arc;
 use std::thread::spawn;
 use std::time::{Duration, Instant};
@@ -116,7 +117,15 @@ impl JournalProcessor {
         let alerts_matcher = &self.matcher_alerts;
         let heartbeats_matcher = &self.matcher_heartbeats;
 
-        let mut args = vec!["-f", "-n", "0", "--output=cat"];
+        let mut args = vec![
+            "-oL", // flush output line by line
+            "journalctl",
+            "--follow",
+            "--lines",
+            "0",
+            "--output=cat",
+            "--no-pager",
+        ];
 
         if self.config.systemd_unit.is_empty() {
             warn!("No systemd unit specified, monitoring all logs.");
@@ -125,9 +134,9 @@ impl JournalProcessor {
             args.extend_from_slice(&["--unit", &unit]);
         }
 
-        let mut child = Command::new("journalctl")
+        let mut child = Command::new("stdbuf")
             .args(&args)
-            .stdout(std::process::Stdio::piped())
+            .stdout(Stdio::piped())
             .spawn()
             .context("Failed to spawn journalctl process")?;
 
@@ -136,7 +145,11 @@ impl JournalProcessor {
             .take()
             .context("Failed to capture stdout of journalctl")?;
 
-        let mut lines = BufReader::new(stdout).lines();
+        // use a large buffer (8MB) instead of the default 8KB
+        // this will not help if the logs are generated faster than we can process them,
+        // at a sustained rate, but it will help to smooth out short bursts
+        let buffer_size = 8 * 1024 * 1024;
+        let mut lines = BufReader::with_capacity(buffer_size, stdout).lines();
 
         while let Ok(Some(message)) = lines.next_line().await {
             // alerts matching
