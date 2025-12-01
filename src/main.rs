@@ -6,7 +6,7 @@ mod slack;
 use anyhow::Result;
 use config::*;
 use log::info;
-use tokio::join;
+use tokio::select;
 
 use self::processor::JournalProcessor;
 use self::slack::Slack;
@@ -33,16 +33,20 @@ async fn main() -> Result<()> {
         "{} version {} (git commit {})",
         binary_name, version, git_hash
     );
-
-    let (tx, rx) = flume::unbounded::<String>();
-
+    // load configuration
     let config_path = std::env::var("LOG_ALERT_CONFIG").ok();
     let config = Config::load(config_path)?;
+
+    // prepare communication channel
+    let (tx, rx) = flume::unbounded::<String>();
+    // setup notifier and journal processor
     let slack = Slack::new(config.slack_webhook_url.clone());
     let processor = JournalProcessor::new(&config)?;
 
-    let (_, processor_res) = join!(slack.start(rx), processor.start(tx));
-    processor_res?;
-
+    // start both tasks
+    select! {
+        res = slack.start(rx) => res?,
+        res = processor.start(tx) => res?,
+    }
     Ok(())
 }

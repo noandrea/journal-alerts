@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::matcher::Matcher;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use dashmap::DashMap;
 use flume::Sender;
 use log::{debug, error, info, warn};
@@ -65,17 +65,20 @@ impl JournalProcessor {
     }
 
     pub async fn start(&self, tx: Sender<String>) -> Result<()> {
+        info!("Journal processor started.");
         // Start the heartbeat monitoring thread
         let heartbeat_states = self.heartbeat_states.clone();
         let heartbeats = self.config.heartbeats.clone();
+        let heartbeat_interval = self.config.heartbeat_interval;
         let heartbeat_tx = tx.clone();
 
         spawn(move || {
+            info!("Heartbeat monitoring thread started.");
             loop {
                 let now = std::time::Instant::now();
                 for entry in heartbeat_states.iter() {
                     let (i, (last_seen, msg)) = entry.pair();
-                    debug!(
+                    info!(
                         "Heartbeat state for index {}: pattern '{}', last seen {:?} ago",
                         i,
                         msg,
@@ -95,9 +98,15 @@ impl JournalProcessor {
                                 error!("Failed to send heartbeat missed alert: {}", e);
                             })
                             .ok();
+                    } else {
+                        debug!(
+                            "Heartbeat for index {} is within tolerance (last seen {:?} ago).",
+                            i,
+                            last_seen.elapsed()
+                        );
                     }
                 }
-                std::thread::sleep(Duration::from_secs(60));
+                std::thread::sleep(Duration::from_secs(heartbeat_interval));
             }
         });
 
@@ -116,7 +125,7 @@ impl JournalProcessor {
             info!("Filtering logs for systemd unit: {}", unit);
             journal
                 .match_add("_SYSTEMD_UNIT", unit.clone())
-                .inspect_err(|e| error!("failed to fiOpenOptionslter {} unit: {}", unit, e))?;
+                .inspect_err(|e| error!("failed to filter {} unit: {}", unit, e))?;
         }
         journal
             .seek(JournalSeek::Tail)
@@ -124,16 +133,21 @@ impl JournalProcessor {
 
         journal.previous()?;
 
+        info!("Starting to monitor journal entries...");
         loop {
-            if journal.next()? == 0 {
-                journal.wait(None)?; // wait for new entries (blocking)
+            if journal.next().context("journal.next() failed")? == 0 {
+                journal.wait(None).context("journal.wait() failed")?; // wait for new entries (blocking)
             }
 
-            let Some(message) = journal.get_data("MESSAGE")?.and_then(|v| {
-                v.value()
-                    .map(String::from_utf8_lossy)
-                    .map(|v| v.into_owned())
-            }) else {
+            let Some(message) = journal
+                .get_data("MESSAGE")
+                .context("journal.get_data() failed")?
+                .and_then(|v| {
+                    v.value()
+                        .map(String::from_utf8_lossy)
+                        .map(|v| v.into_owned())
+                })
+            else {
                 info!("Journal entry has no MESSAGE field.");
                 continue;
             };
@@ -142,7 +156,7 @@ impl JournalProcessor {
             match alerts_matcher.find_match(&message) {
                 Some((_, msg)) => {
                     debug!("Matched alert log message: {}", message);
-                    tx.send(msg.clone())?;
+                    tx.send(msg.clone()).context("tx.send() failed")?;
                 }
                 None => {
                     debug!("No matching rule for log message: {}", message);
