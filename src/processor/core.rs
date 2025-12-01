@@ -111,7 +111,7 @@ impl JournalProcessor {
         });
 
         // Start processing the journal
-
+        info!("Starting journalctl process...");
         let unit = self.config.systemd_unit.clone();
         let alerts_matcher = &self.matcher_alerts;
         let heartbeats_matcher = &self.matcher_heartbeats;
