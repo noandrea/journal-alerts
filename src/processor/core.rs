@@ -8,8 +8,8 @@ use anyhow::{Context, Result};
 use dashmap::DashMap;
 use flume::Sender;
 use log::{debug, error, info, warn};
-use systemd::JournalSeek;
-use systemd::journal::OpenOptions;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
 
 pub struct JournalProcessor {
     config: Config,
@@ -111,47 +111,34 @@ impl JournalProcessor {
         });
 
         // Start processing the journal
-        let mut journal = OpenOptions::default()
-            .open()
-            .expect("Failed to open systemd journal");
 
         let unit = self.config.systemd_unit.clone();
         let alerts_matcher = &self.matcher_alerts;
         let heartbeats_matcher = &self.matcher_heartbeats;
 
+        let mut args = vec!["-f", "-n", "0", "--output=cat"];
+
         if self.config.systemd_unit.is_empty() {
             warn!("No systemd unit specified, monitoring all logs.");
         } else {
             info!("Filtering logs for systemd unit: {}", unit);
-            journal
-                .match_add("_SYSTEMD_UNIT", unit.clone())
-                .inspect_err(|e| error!("failed to filter {} unit: {}", unit, e))?;
+            args.extend_from_slice(&["--unit", &unit]);
         }
-        journal
-            .seek(JournalSeek::Tail)
-            .expect("Failed to seek to end of journal");
 
-        journal.previous()?;
+        let mut child = Command::new("journalctl")
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .context("Failed to spawn journalctl process")?;
 
-        info!("Starting to monitor journal entries...");
-        loop {
-            if journal.next().context("journal.next() failed")? == 0 {
-                journal.wait(None).context("journal.wait() failed")?; // wait for new entries (blocking)
-            }
+        let stdout = child
+            .stdout
+            .take()
+            .context("Failed to capture stdout of journalctl")?;
 
-            let Some(message) = journal
-                .get_data("MESSAGE")
-                .context("journal.get_data() failed")?
-                .and_then(|v| {
-                    v.value()
-                        .map(String::from_utf8_lossy)
-                        .map(|v| v.into_owned())
-                })
-            else {
-                info!("Journal entry has no MESSAGE field.");
-                continue;
-            };
+        let mut lines = BufReader::new(stdout).lines();
 
+        while let Ok(Some(message)) = lines.next_line().await {
             // alerts matching
             match alerts_matcher.find_match(&message) {
                 Some((_, msg)) => {
@@ -172,5 +159,7 @@ impl JournalProcessor {
                 debug!("No matching rule for log message: {}", message);
             }
         }
+
+        Ok(())
     }
 }

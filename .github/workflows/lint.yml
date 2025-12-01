@@ -12,17 +12,11 @@
       runs-on: ubuntu-latest
       steps:
         - uses: actions/checkout@v4
-
-        - name: Install deps 
-          run: sudo apt install libsystemd-dev
-        
         - name: Install Rust
           uses: actions-rust-lang/setup-rust-toolchain@v1
           with:
             components: clippy, rustfmt
-
         - name: Run rustfmt
           run: cargo fmt --all -- --check
-
         - name: Run clippy
           run: cargo clippy --all-targets --all-features -- -D warnings
