@@ -4,7 +4,7 @@ use std::thread::spawn;
 use std::time::{Duration, Instant};
 
 use super::matcher::Matcher;
-use crate::config::Config;
+use crate::config::{Config, HeartbeatRule};
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use flume::Sender;
@@ -14,7 +14,11 @@ use tokio::process::Command;
 
 pub struct JournalProcessor {
     config: Config,
-    heartbeat_states: Arc<DashMap<usize, (std::time::Instant, String)>>,
+    // Map of heartbeat index to (last seen time, message)
+    heartbeat_updates: Arc<DashMap<usize, (Instant, String)>>,
+    // Map of heartbeat index to (last seen time, missed count)
+    heartbeat_misses: Arc<DashMap<usize, (Instant, usize)>>,
+    // Compiled matchers
     matcher_alerts: Matcher,
     matcher_heartbeats: Matcher,
 }
@@ -22,7 +26,7 @@ pub struct JournalProcessor {
 impl JournalProcessor {
     pub fn new(config: &Config) -> Result<Self> {
         // Initialize heartbeat states with current time
-        let heartbeat_states = Arc::new(
+        let heartbeat_updates = Arc::new(
             config
                 .heartbeats
                 .iter()
@@ -52,7 +56,8 @@ impl JournalProcessor {
 
         let jp = JournalProcessor {
             config: config.clone(),
-            heartbeat_states,
+            heartbeat_updates,
+            heartbeat_misses: Arc::new(DashMap::new()),
             matcher_alerts,
             matcher_heartbeats,
         };
@@ -68,7 +73,8 @@ impl JournalProcessor {
     pub async fn start(&self, tx: Sender<String>) -> Result<()> {
         info!("Journal processor started.");
         // Start the heartbeat monitoring thread
-        let heartbeat_states = self.heartbeat_states.clone();
+        let heartbeat_updates = self.heartbeat_updates.clone();
+        let heartbeat_misses = self.heartbeat_misses.clone();
         let heartbeats = self.config.heartbeats.clone();
         let heartbeat_interval = self.config.heartbeat_interval;
         let heartbeat_tx = tx.clone();
@@ -77,8 +83,9 @@ impl JournalProcessor {
             info!("Heartbeat monitoring thread started.");
             loop {
                 let now = std::time::Instant::now();
-                for entry in heartbeat_states.iter() {
+                for entry in heartbeat_updates.iter() {
                     let (i, (last_seen, msg)) = entry.pair();
+                    // TODO: make this a debug log
                     info!(
                         "Heartbeat state for index {}: pattern '{}', last seen {:?} ago",
                         i,
@@ -86,25 +93,62 @@ impl JournalProcessor {
                         last_seen.elapsed()
                     );
                     // retrieve the tolerance for this heartbeat
-                    let tolerance = Duration::from_secs(heartbeats[*i].tolerance);
+                    let HeartbeatRule {
+                        tolerance,
+                        prefix,
+                        pattern,
+                    } = heartbeats[*i].clone();
+                    let tolerance = Duration::from_secs(tolerance);
                     // if the heartbeat is overdue
-                    if now.saturating_duration_since(*last_seen) > tolerance {
-                        heartbeat_tx
-                            .send(format!(
-                                "Heartbeat missed. Last seen {:?} ago, last message: {}",
-                                last_seen.elapsed(),
-                                msg,
-                            ))
-                            .inspect_err(|e| {
-                                error!("Failed to send heartbeat missed alert: {}", e);
-                            })
-                            .ok();
-                    } else {
-                        debug!(
-                            "Heartbeat for index {} is within tolerance (last seen {:?} ago).",
-                            i,
+                    let msg = if now.saturating_duration_since(*last_seen) > tolerance {
+                        let message = format!(
+                            "{} Heartbeat missed for pattern '{}'. Last seen {:?} ago.",
+                            prefix,
+                            msg,
                             last_seen.elapsed()
                         );
+                        Some(message)
+                    } else {
+                        None
+                    };
+                    // now decide if to update or not
+                    let mut entry = heartbeat_misses.entry(*i).or_insert((now, 0));
+                    let (missed_at, missed_count) = entry.value_mut();
+
+                    match (msg, *missed_count) {
+                        (Some(msg), 0) => {
+                            // first time missed, will send alert below
+                            *missed_at = now;
+                            *missed_count += 1;
+                            heartbeat_tx
+                                .send(msg)
+                                .inspect_err(|e| {
+                                    error!("Failed to send heartbeat missed alert: {}", e);
+                                })
+                                .ok();
+                        }
+                        (None, n) if n > 0 => {
+                            // recovery
+                            let recovery_time = now.saturating_duration_since(*missed_at);
+                            let recovery_message = format!(
+                                "🩹 Heartbeat recovered in {}s for pattern '{}'.",
+                                recovery_time.as_secs(),
+                                pattern,
+                            );
+                            // send recovery alert
+                            heartbeat_tx
+                                .send(recovery_message)
+                                .inspect_err(|e| {
+                                    error!("Failed to send heartbeat recovery alert: {}", e);
+                                })
+                                .ok();
+                            // reset the missed count
+                            heartbeat_misses.remove(i);
+                        }
+                        _ => {
+                            // (None, 0) => heartbeat is fine, do nothing
+                            // (Some(_), n) if n > 0 => already alerted, do nothing
+                        }
                     }
                 }
                 std::thread::sleep(Duration::from_secs(heartbeat_interval));
@@ -166,8 +210,7 @@ impl JournalProcessor {
             // heartbeats matching, if matched, update the last seen time
             if let Some((i, msg)) = heartbeats_matcher.find_match(&message) {
                 debug!("Matched heartbeat log message: {}", message);
-                self.heartbeat_states
-                    .insert(i, (std::time::Instant::now(), msg));
+                self.heartbeat_updates.insert(i, (Instant::now(), msg));
             } else {
                 debug!("No matching rule for log message: {}", message);
             }
