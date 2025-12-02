@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::thread::spawn;
 use std::time::{Duration, Instant};
 
+use super::matcher::Matcher;
 use crate::config::Config;
-use crate::matcher::Matcher;
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use flume::Sender;

@@ -1,5 +1,4 @@
 mod config;
-mod matcher;
 mod processor;
 mod slack;
 
