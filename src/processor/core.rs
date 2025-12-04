@@ -198,8 +198,11 @@ impl JournalProcessor {
         while let Ok(Some(message)) = lines.next_line().await {
             // alerts matching
             match alerts_matcher.find_match(&message) {
-                Some((_, msg)) => {
+                Some((i, msg)) => {
                     debug!("Matched alert log message: {}", message);
+                    // get the prefix for this alerts
+                    let prefix = &self.config.alerts[i].prefix;
+                    let msg = format!("{}{}", prefix, msg);
                     tx.send(msg.clone()).context("tx.send() failed")?;
                 }
                 None => {
