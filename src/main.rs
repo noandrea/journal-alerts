@@ -42,6 +42,9 @@ async fn main() -> Result<()> {
     let slack = Slack::new(config.slack_webhook_url.clone());
     let processor = JournalProcessor::new(&config)?;
 
+    // signal startup complete
+    tx.send(format!("{binary_name} has started"))?;
+
     // start both tasks
     select! {
         res = slack.start(rx) => res?,

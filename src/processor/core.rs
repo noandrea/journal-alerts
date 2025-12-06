@@ -203,7 +203,7 @@ impl JournalProcessor {
                     // get the prefix for this alerts
                     let prefix = &self.config.alerts[i].prefix;
                     let msg = format!("{}{}", prefix, msg);
-                    tx.send(msg.clone()).context("tx.send() failed")?;
+                    tx.send(msg).context("tx.send() failed")?;
                 }
                 None => {
                     debug!("No matching rule for log message: {}", message);
