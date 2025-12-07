@@ -1,9 +1,10 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use dashmap::DashMap;
 use flume::Receiver;
 use log::{debug, error, info, warn};
+use tokio::time::sleep;
 
 #[derive(Clone)]
 pub struct Slack {
@@ -23,7 +24,23 @@ impl Slack {
 
     pub async fn start(&self, rx: Receiver<String>) -> Result<()> {
         info!("Slack notifier started.");
-        while let Ok(message) = rx.recv_async().await {
+
+        let repeats = self.repeats.clone();
+        tokio::spawn(async move {
+            loop {
+                // remove suppression entries older than 1 hour
+                // TODO: make this configurable
+                let cutoff = Instant::now() - Duration::from_secs(3600);
+                repeats.retain(|_, &mut (_, timestamp)| timestamp >= cutoff);
+                sleep(Duration::from_secs(3600)).await;
+            }
+        });
+
+        loop {
+            let Ok(message) = rx.recv_async().await else {
+                info!("Slack notifier receiver channel closed, exiting.");
+                break;
+            };
             debug!("Received alert message: {}", message);
 
             // to avoid spamming, check for duplicates
@@ -46,12 +63,6 @@ impl Slack {
             self.repeats
                 .insert(message.clone(), (1usize, Instant::now()));
         }
-
-        // remove suppression entries older than 1 hour
-        // TODO: make this configurable
-        let cutoff = Instant::now() - std::time::Duration::from_secs(3600);
-        self.repeats
-            .retain(|_, &mut (_, timestamp)| timestamp >= cutoff);
 
         Ok(())
     }
