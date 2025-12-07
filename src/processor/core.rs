@@ -1,6 +1,5 @@
 use std::process::Stdio;
 use std::sync::Arc;
-use std::thread::spawn;
 use std::time::{Duration, Instant};
 
 use super::matcher::Matcher;
@@ -11,6 +10,7 @@ use flume::Sender;
 use log::{debug, error, info, warn};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::spawn;
 use tokio::time::sleep;
 
 pub struct JournalProcessor {
@@ -80,7 +80,7 @@ impl JournalProcessor {
         let heartbeat_interval = self.config.heartbeat_interval;
         let heartbeat_tx = tx.clone();
 
-        spawn(move || {
+        spawn(async move {
             info!("Heartbeat monitoring thread started.");
             loop {
                 let now = std::time::Instant::now();
@@ -152,7 +152,7 @@ impl JournalProcessor {
                         }
                     }
                 }
-                std::thread::sleep(Duration::from_secs(heartbeat_interval));
+                sleep(Duration::from_secs(heartbeat_interval)).await;
             }
         });
 
