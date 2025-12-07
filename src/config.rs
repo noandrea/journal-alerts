@@ -14,6 +14,11 @@ pub struct Config {
     pub alerts: Vec<AlertRule>,
     #[serde(default)]
     pub heartbeats: Vec<HeartbeatRule>,
+
+    // this are internal settings
+    // this is the interval to print processed journal entries count
+    #[serde(default)]
+    pub print_count_interval: u128,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +36,7 @@ pub struct HeartbeatRule {
 
 const DEFAULT_CONFIGS: [&str; 2] = ["config.toml", "/etc/journal-alerts/config.toml"];
 const DEFAULT_HEARTBEAT_INTERVAL: u64 = 30;
+const DEFAULT_PRINT_COUNT_INTERVAL: u128 = 50_000;
 
 impl Config {
     pub fn load(path: Option<String>) -> Result<Self> {
@@ -63,6 +69,7 @@ impl Config {
             config.heartbeats.len()
         );
 
+        // heartbeat interval default
         if config.heartbeat_interval == 0 {
             config.heartbeat_interval = DEFAULT_HEARTBEAT_INTERVAL;
         }
@@ -70,6 +77,11 @@ impl Config {
             "Heartbeat interval set to {} seconds",
             config.heartbeat_interval
         );
+
+        // print count interval
+        if config.print_count_interval == 0 {
+            config.print_count_interval = DEFAULT_PRINT_COUNT_INTERVAL;
+        }
 
         Ok(config)
     }
