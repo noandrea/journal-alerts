@@ -1,6 +1,6 @@
 use std::process::Stdio;
 use std::sync::Arc;
-use std::thread::spawn;
+use std::thread::{sleep, spawn};
 use std::time::{Duration, Instant};
 
 use super::matcher::Matcher;
@@ -178,47 +178,73 @@ impl JournalProcessor {
             args.extend_from_slice(&["--unit", &unit]);
         }
 
-        let mut child = Command::new("stdbuf")
-            .args(&args)
-            .stdout(Stdio::piped())
-            .spawn()
-            .context("Failed to spawn journalctl process")?;
+        let mut log_processed = 0u128;
+        let mut log_matched = 0u128;
 
-        let stdout = child
-            .stdout
-            .take()
-            .context("Failed to capture stdout of journalctl")?;
+        loop {
+            // outer loop to restart journalctl if it crashes
+            let mut child = Command::new("stdbuf")
+                .args(&args)
+                .stdout(Stdio::piped())
+                .spawn()
+                .context("Failed to spawn journalctl process")?;
 
-        // use a large buffer (8MB) instead of the default 8KB
-        // this will not help if the logs are generated faster than we can process them,
-        // at a sustained rate, but it will help to smooth out short bursts
-        let buffer_size = 8 * 1024 * 1024;
-        let mut lines = BufReader::with_capacity(buffer_size, stdout).lines();
+            let stdout = child
+                .stdout
+                .take()
+                .context("Failed to capture stdout of journalctl")?;
 
-        while let Ok(Some(message)) = lines.next_line().await {
-            // alerts matching
-            match alerts_matcher.find_match(&message) {
-                Some((i, msg)) => {
-                    debug!("Matched alert log message: {}", message);
-                    // get the prefix for this alerts
-                    let prefix = &self.config.alerts[i].prefix;
-                    let msg = format!("{}{}", prefix, msg);
-                    tx.send(msg).context("tx.send() failed")?;
+            // use a large buffer (8MB) instead of the default 8KB
+            // this will not help if the logs are generated faster than we can process them,
+            // at a sustained rate, but it will help to smooth out short bursts
+            let buffer_size = 8 * 1024 * 1024;
+            let mut lines = BufReader::with_capacity(buffer_size, stdout).lines();
+            loop {
+                let Ok(Some(message)) = lines
+                    .next_line()
+                    .await
+                    .inspect_err(|e| warn!("jounranl process error {e}"))
+                else {
+                    error!("Journalctl process terminated unexpectedly. Restarting...");
+                    sleep(Duration::from_secs(1));
+                    break;
+                };
+                log_processed += 1;
+                // alerts matching
+                match alerts_matcher.find_match(&message) {
+                    Some((i, msg)) => {
+                        debug!("Matched alert log message: {}", message);
+                        // get the prefix for this alerts
+                        let prefix = &self.config.alerts[i].prefix;
+                        let msg = format!("{}{}", prefix, msg);
+                        // if we cannot process the message, just log and continue
+                        tx.send(msg)
+                            .inspect_err(|e| {
+                                error!("Failed to send alert message: {}", e);
+                            })
+                            .ok();
+                        log_matched += 1;
+                    }
+                    None => {
+                        debug!("No matching rule for log message: {}", message);
+                    }
                 }
-                None => {
+
+                // heartbeats matching, if matched, update the last seen time
+                if let Some((i, msg)) = heartbeats_matcher.find_match(&message) {
+                    debug!("Matched heartbeat log message: {}", message);
+                    self.heartbeat_updates.insert(i, (Instant::now(), msg));
+                } else {
                     debug!("No matching rule for log message: {}", message);
                 }
-            }
 
-            // heartbeats matching, if matched, update the last seen time
-            if let Some((i, msg)) = heartbeats_matcher.find_match(&message) {
-                debug!("Matched heartbeat log message: {}", message);
-                self.heartbeat_updates.insert(i, (Instant::now(), msg));
-            } else {
-                debug!("No matching rule for log message: {}", message);
+                if log_processed.is_multiple_of(self.config.print_count_interval) {
+                    info!(
+                        "Processed {} log messages, matched {} alerts.",
+                        log_processed, log_matched
+                    );
+                }
             }
         }
-
-        Ok(())
     }
 }

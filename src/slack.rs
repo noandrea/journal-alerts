@@ -39,6 +39,7 @@ impl Slack {
 
             if let Err(e) = self.send_alert(&message).await {
                 error!("Error sending alert to Slack: {}", e);
+                continue;
             }
 
             // insert into repeats map with count 1 and current instant
