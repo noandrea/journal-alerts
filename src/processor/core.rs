@@ -1,6 +1,6 @@
 use std::process::Stdio;
 use std::sync::Arc;
-use std::thread::{sleep, spawn};
+use std::thread::spawn;
 use std::time::{Duration, Instant};
 
 use super::matcher::Matcher;
@@ -11,6 +11,7 @@ use flume::Sender;
 use log::{debug, error, info, warn};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::time::sleep;
 
 pub struct JournalProcessor {
     config: Config,
@@ -206,7 +207,9 @@ impl JournalProcessor {
                     .inspect_err(|e| warn!("jounranl process error {e}"))
                 else {
                     error!("Journalctl process terminated unexpectedly. Restarting...");
-                    sleep(Duration::from_secs(1));
+                    // kill the process if it's still running
+                    let _ = child.kill().await;
+                    sleep(Duration::from_secs(1)).await;
                     break;
                 };
                 log_processed += 1;
